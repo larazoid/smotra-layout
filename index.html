@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="hr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Raspored štanda · Smotra</title>
+    <meta name="description" content="Složite slike, logotipe i tekst na panele svog štanda i pošaljite raspored organizatoru." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M5 26V6h22v20' fill='none' stroke='%232563eb' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400;1,700&family=Merriweather:ital,wght@0,400;0,700;1,400;1,700&family=Montserrat:ital,wght@0,400;0,700;1,400;1,700&family=Open+Sans:ital,wght@0,400;0,700;1,400;1,700&family=Oswald:wght@400;700&family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=Roboto:ital,wght@0,400;0,700;1,400;1,700&display=swap"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26V6h22v20" /></svg>
+        <div>
+          <h1>Raspored štanda</h1>
+          <p>Smotra · paneli 1–8</p>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <button class="btn primary-soft" id="btn-image">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="2" /><path d="m21 16-5-5-9 9" /></svg>
+          Dodaj sliku
+        </button>
+        <button class="btn primary-soft" id="btn-text">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6V4h14v2M12 4v16M9 20h6" /></svg>
+          Dodaj tekst
+        </button>
+        <span class="sep"></span>
+        <button class="icon-btn" id="btn-undo" title="Poništi (Ctrl+Z)" aria-label="Poništi">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5" /><path d="M4 9h11a5 5 0 0 1 0 10h-3" /></svg>
+        </button>
+        <button class="icon-btn" id="btn-redo" title="Ponovi (Ctrl+Shift+Z)" aria-label="Ponovi">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5" /><path d="M20 9H9a5 5 0 0 0 0 10h3" /></svg>
+        </button>
+        <span class="sep"></span>
+        <button class="icon-btn" id="btn-zoom-out" title="Umanji" aria-label="Umanji"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button>
+        <button class="zoom-label" id="btn-zoom-fit" title="Prikaži cijeli štand">100%</button>
+        <button class="icon-btn" id="btn-zoom-in" title="Uvećaj" aria-label="Uvećaj"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5v14" /></svg></button>
+        <span class="sep"></span>
+        <button class="btn" id="btn-3d">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z" /><path d="m4 7.5 8 4.5 8-4.5M12 12v9" /></svg>
+          3D pregled
+        </button>
+      </div>
+
+      <div class="actions">
+        <span class="save-status" id="save-status"></span>
+        <button class="btn ghost" id="btn-new" title="Obriši sve i počni ispočetka">Novi</button>
+        <button class="btn" id="btn-load" title="Otvori prethodno preuzeti ZIP">Učitaj ZIP</button>
+        <button class="btn primary" id="btn-export">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14" /></svg>
+          Preuzmi ZIP
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar sidebar-left">
+        <section class="card">
+          <h2>Podaci o izlagaču</h2>
+          <label class="field"><span>Naziv ustanove *</span><input id="ex-name" data-ex="name" placeholder="npr. Sveučilište u Splitu" autocomplete="organization" /></label>
+          <label class="field"><span>Kontakt osoba</span><input data-ex="contact" autocomplete="name" /></label>
+          <label class="field"><span>E-mail</span><input type="email" data-ex="email" autocomplete="email" /></label>
+          <label class="field"><span>Napomena za organizatora</span><textarea data-ex="note" rows="3" placeholder="npr. logo na panelu 2 neka bude u boji"></textarea></label>
+        </section>
+
+        <section class="card">
+          <h2>Tlocrt štanda</h2>
+          <p class="hint">Pogled odozgo. Kliknite zid da odaberete panel.</p>
+          <div id="plan" class="plan"></div>
+          <ul class="legend">
+            <li><i class="sw back"></i><span><b>Stražnji zid</b> — paneli 1, 2, 3, 4</span></li>
+            <li><i class="sw side"></i><span><b>Bočni zidovi</b> — lijevo 7, 8 · desno 5, 6</span></li>
+            <li><i class="sw org"></i><span><b>Organizator</b> — natpis i pult (9–12)</span></li>
+          </ul>
+        </section>
+
+        <section class="card help">
+          <h2>Kako koristiti</h2>
+          <ol>
+            <li>Upišite naziv svoje ustanove.</li>
+            <li>Kliknite panel i dodajte slike, logotipe ili tekst. Slike možete i povući s računala ravno na panel.</li>
+            <li>Pomičite, povećavajte i rotirajte elemente. Pratite upozorenja u stupcu <b>Provjera</b>.</li>
+            <li>Pogledajte <b>3D pregled</b>, zatim kliknite <b>Preuzmi ZIP</b> i pošaljite datoteku organizatoru.</li>
+          </ol>
+          <p class="hint">Rad se automatski sprema u ovom pregledniku.</p>
+        </section>
+      </aside>
+
+      <section class="stage-wrap">
+        <div id="stage"></div>
+        <div class="stage-caption">Zidovi su prikazani rasklopljeno — svaki onako kako ga vidite kad stojite ispred njega.</div>
+        <div class="stage-hint">Povucite pozadinu za pomicanje · Ctrl/⌘ + kotačić za zoom · Alt isključuje poravnavanje</div>
+        <div class="drop-hint"><span>Ispustite slike na panel</span></div>
+      </section>
+
+      <aside class="sidebar sidebar-right">
+        <section class="card" id="props"></section>
+        <section class="card">
+          <h2>Provjera</h2>
+          <div id="issues"></div>
+        </section>
+        <section class="card">
+          <div class="card-head">
+            <h2>Prilozi</h2>
+            <button class="btn small" id="btn-attach">+ Dodaj</button>
+          </div>
+          <p class="hint">Originalni logotipi (AI, PDF, EPS…) i ostale datoteke za organizatora.</p>
+          <div id="attachments"></div>
+        </section>
+      </aside>
+    </main>
+
+    <div class="modal" id="p3d" hidden>
+      <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="p3d-title">
+        <div class="modal-head">
+          <div>
+            <h2 id="p3d-title">3D pregled štanda</h2>
+            <p>Povucite mišem za okretanje. Sivi dijelovi (natpis i pult) izrađuje organizator.</p>
+          </div>
+          <button class="icon-btn" data-close aria-label="Zatvori"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg></button>
+        </div>
+        <div class="p3d-scene"><div class="p3d-booth"></div></div>
+        <div class="modal-foot">
+          <button class="btn" data-view="left">Lijevi zid</button>
+          <button class="btn" data-view="front">Sprijeda</button>
+          <button class="btn" data-view="right">Desni zid</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <input type="file" id="file-image" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif,image/avif,.svg" multiple hidden />
+    <input type="file" id="file-zip" accept=".zip,application/zip" hidden />
+    <input type="file" id="file-attach" multiple hidden />
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
