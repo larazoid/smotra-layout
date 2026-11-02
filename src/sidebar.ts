@@ -3,6 +3,7 @@ import { type PanelLayout, primaryPanel, wallName } from './booth';
 import { dpiLevel, effectiveDpi, computeIssues, itemLabel } from './issues';
 import { FONTS, type ImageItem, type Item, type TextItem } from './state';
 import { esc, formatBytes, normHex, round1 } from './util';
+import { facultyById } from './event';
 
 const SWATCHES = ['#ffffff', '#f1f5f9', '#0f172a', '#1e3a8a', '#2563eb', '#0e7490', '#15803d', '#b91c1c', '#c2410c', '#ca8a04', '#7c3aed', '#be185d'];
 
@@ -13,21 +14,22 @@ const DPI_TEXT = {
   error: 'Preniska rezolucija — otisak će biti mutan',
 };
 
-/** Right-hand column: properties of the selection, checks and attachments. */
+/** Right-hand column: properties of the selection, other materials and checks. */
 export class Sidebar {
   private readonly props = document.getElementById('props')!;
   private readonly issuesEl = document.getElementById('issues')!;
-  private readonly attachEl = document.getElementById('attachments')!;
+  private readonly materialsEl = document.getElementById('materials')!;
   /** Panel the X/Y fields are measured from, fixed while the fields are being edited. */
   private propsPanel: PanelLayout | null = null;
 
   constructor(private readonly app: App) {
     app.store.on((kind) => {
       if (kind === 'selection') this.renderProps();
+      if (kind === 'exhibitor' && app.store.selection?.type === 'panel') this.renderProps();
       if (kind === 'doc') {
         this.refreshProps();
         this.renderIssues();
-        this.renderAttachments();
+        this.renderMaterials();
       }
     });
     this.bindProps();
@@ -35,14 +37,14 @@ export class Sidebar {
       const li = (e.target as HTMLElement).closest<HTMLElement>('[data-item]');
       if (li) this.app.store.select({ type: 'item', id: li.dataset.item! });
     });
-    this.attachEl.addEventListener('click', (e) => {
+    this.materialsEl.addEventListener('click', (e) => {
       const b = (e.target as HTMLElement).closest<HTMLElement>('[data-remove]');
-      if (b) this.app.removeAttachment(b.dataset.remove!);
+      if (b) this.app.removeMaterial(b.dataset.remove!);
     });
-    document.getElementById('btn-attach')!.addEventListener('click', () => this.app.pickAttachments());
+    this.bindMaterialsDrop();
     this.renderProps();
     this.renderIssues();
-    this.renderAttachments();
+    this.renderMaterials();
   }
 
   focusText(selectAll = false) {
@@ -96,12 +98,6 @@ export class Sidebar {
       syncHex('[data-f="fill"]', it.fill);
       syncHex('[data-f="fillHex"]', it.fill);
     }
-    const sel = this.app.store.selection;
-    if (sel?.type === 'panel') {
-      const c = this.app.store.doc.panelBg[sel.id] ?? '#ffffff';
-      syncHex('[data-f="bg"]', c);
-      syncHex('[data-f="bgHex"]', c);
-    }
   }
 
   private head(kind: string, title: string, sub = '') {
@@ -109,7 +105,7 @@ export class Sidebar {
   }
 
   private panelHtml(p: PanelLayout) {
-    const bg = this.app.store.doc.panelBg[p.id] ?? '#ffffff';
+    const faculty = facultyById(this.app.store.doc.exhibitor.facultyId);
     const items = this.app.store.doc.items.filter((it) => {
       const b = this.app.canvas.itemBox(it.id);
       return b && primaryPanel(this.app.layout, b).id === p.id;
@@ -127,8 +123,12 @@ export class Sidebar {
         <button class="btn primary-soft" data-a="add-text">+ Tekst na ovaj panel</button>
       </div>
       <div class="field">
-        <span>Boja pozadine panela</span>
-        ${this.colorHtml('bg', bg)}
+        <span>Boja panela</span>
+        ${
+          faculty
+            ? `<div class="locked-color"><i style="--c:${faculty.color}"></i><span>Boja sastavnice (${faculty.color}). Svi paneli štanda su u ovoj boji i ne mijenja se.</span></div>`
+            : '<p class="muted">Odaberite sastavnicu (lijevo gore) — paneli će dobiti njezinu boju.</p>'
+        }
       </div>
       <div class="field">
         <span>Elementi na ovom panelu</span>
@@ -140,7 +140,7 @@ export class Sidebar {
       </div>`;
   }
 
-  private colorHtml(field: 'bg' | 'fill', value: string) {
+  private colorHtml(field: 'fill', value: string) {
     return `
       <div class="swatches">
         ${SWATCHES.map((c) => `<button class="swatch${c === value ? ' on' : ''}" style="--c:${c}" data-swatch="${c}" data-target="${field}" title="${c}"></button>`).join('')}
@@ -254,13 +254,7 @@ export class Sidebar {
     const sel = store.selection;
     if (!sel) return;
 
-    if (sel.type === 'panel') {
-      if (f === 'bg' || f === 'bgHex') {
-        const c = normHex(raw);
-        if (c) this.app.setPanelBg(sel.id, c, `bg:${sel.id}`);
-      }
-      return;
-    }
+    if (sel.type === 'panel') return;
 
     const num = parseFloat(raw.replace(',', '.'));
     const finite = Number.isFinite(num);
@@ -331,7 +325,7 @@ export class Sidebar {
     }
   }
 
-  // ---------- checks & attachments ----------
+  // ---------- checks & materials ----------
 
   private renderIssues() {
     const issues = computeIssues(this.app);
@@ -348,18 +342,46 @@ export class Sidebar {
       .join('')}</ul>`;
   }
 
-  private renderAttachments() {
-    const ids = this.app.store.doc.attachments;
+  private renderMaterials() {
+    const ids = this.app.store.doc.materials;
+    const count = document.getElementById('materials-count');
+    if (count) count.textContent = ids.length ? String(ids.length) : '';
     if (!ids.length) {
-      this.attachEl.innerHTML = '<p class="muted">Nema priloga.</p>';
+      this.materialsEl.innerHTML = '';
       return;
     }
-    this.attachEl.innerHTML = `<ul class="attach">${ids
+    this.materialsEl.innerHTML = `<ul class="materials">${ids
       .map((id) => {
         const f = this.app.store.files.get(id);
         if (!f) return '';
-        return `<li><span title="${esc(f.name)}">${esc(f.name)}</span><small>${formatBytes(f.blob.size)}</small><button class="icon-btn small" data-remove="${id}" title="Ukloni">✕</button></li>`;
+        const ext = (f.name.split('.').pop() ?? '').slice(0, 4).toUpperCase();
+        const preview = f.url ? `<img src="${f.url}" alt="" />` : `<span class="ext">${esc(ext || 'FILE')}</span>`;
+        return `<li title="${esc(f.name)}">
+          <div class="mat-thumb">${preview}</div>
+          <div class="mat-meta"><span>${esc(f.name)}</span><small>${formatBytes(f.blob.size)}</small></div>
+          <button class="icon-btn small" data-remove="${id}" title="Ukloni" aria-label="Ukloni ${esc(f.name)}">✕</button>
+        </li>`;
       })
       .join('')}</ul>`;
   }
+
+  private bindMaterialsDrop() {
+    const zone = document.getElementById('materials-drop')!;
+    zone.addEventListener('click', () => this.app.pickMaterials());
+    const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+    zone.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = 'copy';
+      zone.classList.add('over');
+    });
+    zone.addEventListener('dragleave', () => zone.classList.remove('over'));
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      zone.classList.remove('over');
+      const files = [...(e.dataTransfer?.files ?? [])];
+      if (files.length) void this.app.addMaterials(files);
+    });
+  }
+
 }

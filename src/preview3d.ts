@@ -1,6 +1,7 @@
 import type { App } from './app';
-import { BOOTH, type WallLayout } from './booth';
-import { clamp, esc } from './util';
+import { BOOTH, type WallSpec, wallLength, wallSpec } from './booth';
+import { drawFascia } from './event';
+import { clamp } from './util';
 
 /** Simple CSS 3D model of the stand with the walls' current artwork as textures. */
 export class Preview3D {
@@ -68,19 +69,21 @@ export class Preview3D {
 
   private build() {
     this.booth.replaceChildren();
-    const L = this.app.layout;
-    const back = L.wall('back');
-    const left = L.wall('left');
-    const right = L.wall('right');
+    const back = this.app.layout.walls.find((w) => w.id === 'back')!;
+    const left = wallSpec('left');
+    const right = wallSpec('right');
     const W = back.w;
-    const D = Math.max(left.w, right.w);
+    const leftLen = wallLength(left);
+    const rightLen = wallLength(right);
+    const D = Math.max(leftLen, rightLen);
     const H = BOOTH.wallHeight;
     const { fascia, counter } = BOOTH.organizer;
     const fh = fascia[0].height;
+    const faculty = this.app.faculty;
+    const color = faculty?.color ?? '#ffffff';
 
     const s = Math.min(0.24, (this.scene.clientWidth * 0.58) / W, (this.scene.clientHeight * 0.62) / (H + fh));
     const texPx = Math.min(0.7, s * 2.5);
-    const tex = (w: WallLayout) => this.app.canvas.renderRegion(w, texPx).toDataURL('image/png');
 
     const face = (w: number, h: number, transform: string, cls: string, opts: { img?: string; html?: string } = {}) => {
       const el = document.createElement('div');
@@ -96,22 +99,19 @@ export class Preview3D {
     const sH = H * s;
 
     face(sW, sD, `translateY(${sH / 2}px) rotateX(90deg)`, 'floor');
-    face(sW, sH, `translateZ(${-sD / 2}px)`, 'wall back', { img: tex(back) });
-    face(left.w * s, sH, `translateX(${-sW / 2}px) rotateY(90deg)`, 'wall side', { img: tex(left) });
-    face(right.w * s, sH, `translateX(${sW / 2}px) rotateY(-90deg)`, 'wall side', { img: tex(right) });
+    face(sW, sH, `translateZ(${-sD / 2}px)`, 'wall back', { img: this.app.canvas.renderRegion(back, texPx).toDataURL('image/png') });
+    face(leftLen * s, sH, `translateX(${-sW / 2}px) rotateY(90deg)`, 'wall side', { img: solidWall(left, color, texPx) });
+    face(rightLen * s, sH, `translateX(${sW / 2}px) rotateY(-90deg)`, 'wall side', { img: solidWall(right, color, texPx) });
 
-    // Front posts and the header boards (made by the organiser).
+    // Front posts and the header boards 11 + 12 with the faculty name.
     const postH = (H + fh) * s;
     for (const x of [-sW / 2, sW / 2]) face(4, postH, `translate3d(${x}px, ${-(fh * s) / 2}px, ${sD / 2}px)`, 'post');
     const total = fascia.reduce((n, f) => n + f.width, 0);
-    let fx = -total / 2;
-    const name = esc(this.app.store.doc.exhibitor.name.trim());
-    for (const f of fascia) {
-      const cx = (fx + f.width / 2) * s;
-      fx += f.width;
-      const label = f.id === '11' && name ? `<b>${name}</b>` : `<span>${f.id}</span>`;
-      face(f.width * s, f.height * s, `translate3d(${cx}px, ${-sH / 2 - (f.height * s) / 2}px, ${sD / 2}px)`, 'org fascia', { html: label });
-    }
+    const header = document.createElement('canvas');
+    header.width = Math.round(total * texPx);
+    header.height = Math.round(fh * texPx);
+    drawFascia(header, faculty, fascia[0].width / total);
+    face(total * s, fh * s, `translate3d(0px, ${-sH / 2 - (fh * s) / 2}px, ${sD / 2}px)`, 'fascia', { img: header.toDataURL('image/png') });
 
     // Counter at the front-left corner.
     const cw = counter.width * s;
@@ -123,4 +123,24 @@ export class Preview3D {
     face(cd, ch, `translate3d(${ccx + cw / 2}px, ${ccy}px, ${sD / 2 - cd / 2}px) rotateY(90deg)`, 'org counter side', { html: `<small>${counter.side}</small>` });
     face(cw, cd, `translate3d(${ccx}px, ${sH / 2 - ch}px, ${sD / 2 - cd / 2}px) rotateX(90deg)`, 'org counter top');
   }
+}
+
+/** A side wall: every panel in the faculty colour, with the aluminium profiles between them. */
+function solidWall(spec: WallSpec, color: string, px: number): string {
+  const c = document.createElement('canvas');
+  c.width = Math.round(wallLength(spec) * px);
+  c.height = Math.round(BOOTH.wallHeight * px);
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#9aa4b1';
+  let x = 0;
+  spec.panels.forEach((p, i) => {
+    if (i > 0) {
+      ctx.fillRect(Math.round(x * px), 0, Math.max(1, Math.round(BOOTH.postWidth * px)), c.height);
+      x += BOOTH.postWidth;
+    }
+    x += p.width;
+  });
+  return c.toDataURL('image/png');
 }

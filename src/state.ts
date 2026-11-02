@@ -1,7 +1,8 @@
 import type { FileEntry } from './files';
 
 export interface Exhibitor {
-  name: string;
+  /** Id from FACULTIES; sets the panel colour and the header text. */
+  facultyId: string;
   contact: string;
   email: string;
   note: string;
@@ -42,10 +43,8 @@ export type Item = ImageItem | TextItem;
 export interface Doc {
   exhibitor: Exhibitor;
   items: Item[];
-  /** Panel id → background colour. */
-  panelBg: Record<string, string>;
-  /** File ids of extra files (AI, PDF, …) sent along but not placed. */
-  attachments: string[];
+  /** File ids of material sent along without a set place (photos, logos, brochures…). */
+  materials: string[];
 }
 
 export type Selection = { type: 'item' | 'panel'; id: string } | null;
@@ -54,7 +53,17 @@ export type ChangeKind = 'doc' | 'selection' | 'hover' | 'exhibitor';
 export const FONTS = ['Montserrat', 'Inter', 'Roboto', 'Open Sans', 'Oswald', 'Playfair Display', 'Merriweather', 'Arial', 'Georgia'];
 
 export function emptyDoc(): Doc {
-  return { exhibitor: { name: '', contact: '', email: '', note: '' }, items: [], panelBg: {}, attachments: [] };
+  return { exhibitor: { facultyId: '', contact: '', email: '', note: '' }, items: [], materials: [] };
+}
+
+/** Accepts saved or imported data, including older shapes, and returns a valid Doc. */
+export function normalizeDoc(raw: unknown): Doc {
+  const d = (raw ?? {}) as Partial<Doc> & { attachments?: string[] };
+  return {
+    exhibitor: { ...emptyDoc().exhibitor, ...(d.exhibitor ?? {}) },
+    items: Array.isArray(d.items) ? d.items : [],
+    materials: Array.isArray(d.materials) ? d.materials : Array.isArray(d.attachments) ? d.attachments : [],
+  };
 }
 
 export class Store {
@@ -118,15 +127,14 @@ export class Store {
   }
 
   private snapshot(): string {
-    const { items, panelBg, attachments } = this.doc;
-    return JSON.stringify({ items, panelBg, attachments });
+    const { items, materials } = this.doc;
+    return JSON.stringify({ items, materials });
   }
 
   private applySnapshot(s: string) {
-    const d = JSON.parse(s) as Pick<Doc, 'items' | 'panelBg' | 'attachments'>;
+    const d = JSON.parse(s) as Pick<Doc, 'items' | 'materials'>;
     this.doc.items = d.items;
-    this.doc.panelBg = d.panelBg;
-    this.doc.attachments = d.attachments;
+    this.doc.materials = d.materials;
     this.lastKey = undefined;
     if (this.selection?.type === 'item' && !this.item(this.selection.id)) this.selection = null;
     this.emit('doc');
@@ -169,9 +177,9 @@ export class Store {
     return this.selection?.type === 'item' ? this.item(this.selection.id) : undefined;
   }
 
-  /** File ids referenced by placed images or attachments. */
+  /** File ids referenced by placed images or materials. */
   usedFileIds(): Set<string> {
-    const ids = new Set(this.doc.attachments);
+    const ids = new Set(this.doc.materials);
     for (const it of this.doc.items) if (it.kind === 'image') ids.add(it.fileId);
     return ids;
   }

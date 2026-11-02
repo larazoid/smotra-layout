@@ -11,6 +11,8 @@ export interface WallSpec {
   kind: WallKind;
   title: string;
   subtitle: string;
+  /** Side walls only take the faculty colour; exhibitors design the back wall. */
+  editable: boolean;
   /** Panels as seen when standing in front of the wall, from left to right. */
   panels: { id: string; width: number }[];
 }
@@ -21,6 +23,7 @@ const WALLS: WallSpec[] = [
     kind: 'side',
     title: 'BOČNI ZID',
     subtitle: 'lijevo',
+    editable: false,
     panels: [
       { id: '7', width: 455 },
       { id: '8', width: 455 },
@@ -31,6 +34,7 @@ const WALLS: WallSpec[] = [
     kind: 'back',
     title: 'STRAŽNJI ZID',
     subtitle: 'nasuprot posjetiteljima',
+    editable: true,
     panels: [
       { id: '1', width: 40 },
       { id: '2', width: 950 },
@@ -43,6 +47,7 @@ const WALLS: WallSpec[] = [
     kind: 'side',
     title: 'BOČNI ZID',
     subtitle: 'desno',
+    editable: false,
     panels: [
       { id: '5', width: 455 },
       { id: '6', width: 455 },
@@ -111,16 +116,24 @@ export interface Layout {
   walls: WallLayout[];
   panels: PanelLayout[];
   bounds: Rect;
-  wall(id: WallId): WallLayout;
   panel(id: string): PanelLayout | undefined;
 }
 
-/** Lays the three walls out side by side ("unfolded"), each as seen from inside the stand. */
+export function wallSpec(id: WallId): WallSpec {
+  return BOOTH.walls.find((w) => w.id === id)!;
+}
+
+/** Total length of a wall including the profiles between its panels. */
+export function wallLength(spec: WallSpec): number {
+  return spec.panels.reduce((n, p) => n + p.width, 0) + BOOTH.postWidth * (spec.panels.length - 1);
+}
+
+/** Lays out the editable walls side by side ("unfolded"), each as seen from inside the stand. */
 export function computeLayout(): Layout {
   const walls: WallLayout[] = [];
   const panels: PanelLayout[] = [];
   let x = 0;
-  for (const spec of BOOTH.walls) {
+  for (const spec of BOOTH.walls.filter((w) => w.editable)) {
     const start = x;
     const own: PanelLayout[] = [];
     spec.panels.forEach((p, i) => {
@@ -141,7 +154,6 @@ export function computeLayout(): Layout {
     walls,
     panels,
     bounds: { x: left, y: top, w: right - left, h: bottom - top },
-    wall: (id) => walls.find((w) => w.id === id)!,
     panel: (id) => panels.find((p) => p.id === id),
   };
 }

@@ -1,5 +1,6 @@
 import Konva from 'konva';
 import { BOOTH, CANVAS, COLORS, type Layout, type Rect, type WallId, nearestPanel, panelAt } from './booth';
+import { facultyById, textOn } from './event';
 import type { Item, Store, TextItem } from './state';
 import { clamp, round1 } from './util';
 
@@ -74,13 +75,15 @@ export class BoothCanvas {
     this.buildBackground();
     this.buildOverlay();
     this.bindEvents();
+    this.syncPanels();
 
     store.on((kind) => {
       if (kind === 'doc') {
         this.syncItems();
         this.syncPanels();
         this.syncSelection();
-      } else if (kind === 'selection') this.syncSelection();
+      } else if (kind === 'exhibitor') this.syncPanels();
+      else if (kind === 'selection') this.syncSelection();
       else if (kind === 'hover') this.syncOutlines();
     });
 
@@ -413,9 +416,18 @@ export class BoothCanvas {
 
   // ---------- panels & selection ----------
 
+  /** Every panel takes the faculty colour; exhibitors can't change it. */
   private syncPanels() {
-    for (const [id, rect] of this.panelFills) rect.fill(this.store.doc.panelBg[id] ?? '#ffffff');
+    const color = facultyById(this.store.doc.exhibitor.facultyId)?.color ?? '#ffffff';
+    for (const rect of this.panelFills.values()) rect.fill(color);
+    const mark = textOn(color) === '#ffffff' ? 'rgba(255, 255, 255, 0.14)' : 'rgba(15, 23, 42, 0.07)';
+    for (const t of this.watermarks.getChildren()) (t as Konva.Text).fill(mark);
     this.bgLayer.batchDraw();
+  }
+
+  /** Colour of the panels right now (white until a faculty is chosen). */
+  panelColor(): string {
+    return facultyById(this.store.doc.exhibitor.facultyId)?.color ?? '#ffffff';
   }
 
   private syncSelection() {

@@ -1,10 +1,11 @@
 import JSZip from 'jszip';
 import type { App } from './app';
 import { BOOTH, panelsTouched, primaryPanel, wallName } from './booth';
+import { EVENT, slotLabel } from './event';
 import { computeIssues, effectiveDpi } from './issues';
-import type { Doc, Item } from './state';
+import { type Doc, type Item, normalizeDoc } from './state';
 import type { SavedFile } from './storage';
-import { canvasToBlob, round1, safeFileName, slugify } from './util';
+import { canvasToBlob, formatBytes, round1, safeFileName } from './util';
 
 const FORMAT = 'smotra-layout';
 
@@ -55,11 +56,20 @@ function describe(app: App, it: Item, files: Record<string, FileRef>) {
   };
 }
 
+export function zipFilename(app: App): string {
+  return `smotra-${EVENT.year}-${app.faculty?.id ?? 'izlagac'}.zip`;
+}
+
 function summary(app: App, report: ReturnType<typeof describe>[]): string {
   const ex = app.store.doc.exhibitor;
+  const f = app.faculty;
+  const color = f?.color ?? '#ffffff';
   const lines: string[] = [];
-  lines.push('RASPORED ŠTANDA — SMOTRA', '');
-  lines.push(`Izlagač:  ${ex.name}`);
+  lines.push(`RASPORED ŠTANDA — ${EVENT.name.toUpperCase()} ${EVENT.year}`, '');
+  lines.push(`Sastavnica: ${f?.name ?? '(nije odabrana)'}`);
+  if (f) lines.push(`Termin:     ${slotLabel(f)}`);
+  lines.push(`Boja:       ${color}  (svi paneli 1–8)`);
+  lines.push(`Natpis:     paneli 11 i 12 — „${f?.name.toUpperCase() ?? ''}”`);
   if (ex.contact) lines.push(`Kontakt:  ${ex.contact}`);
   if (ex.email) lines.push(`E-mail:   ${ex.email}`);
   lines.push(`Izvezeno: ${new Date().toLocaleString('hr-HR')}`, '');
@@ -70,8 +80,7 @@ function summary(app: App, report: ReturnType<typeof describe>[]): string {
   for (const w of app.layout.walls) {
     lines.push('='.repeat(60), wallName(w.kind, w.id).toUpperCase(), '='.repeat(60));
     for (const p of w.panels) {
-      const bg = app.store.doc.panelBg[p.id] ?? '#ffffff';
-      lines.push('', `Panel ${p.id}  (${p.w} × ${p.h} mm)  pozadina: ${bg}`);
+      lines.push('', `Panel ${p.id}  (${p.w} × ${p.h} mm)  pozadina: ${color}`);
       const own = report.filter((r) => r.panel === p.id);
       if (!own.length) lines.push('  — prazno —');
       for (const r of own) {
@@ -95,28 +104,37 @@ function summary(app: App, report: ReturnType<typeof describe>[]): string {
     for (const i of issues) lines.push(`  [${i.level === 'error' ? 'GREŠKA' : i.level === 'warn' ? 'PAŽNJA' : 'INFO'}] ${i.text}`);
     lines.push('');
   }
-  if (app.store.doc.attachments.length) {
-    lines.push('PRILOZI (mapa prilozi/)');
-    for (const id of app.store.doc.attachments) lines.push(`  • ${app.store.files.get(id)?.name}`);
+  const side = BOOTH.walls.filter((w) => !w.editable);
+  lines.push('BOČNI ZIDOVI', '-'.repeat(60));
+  for (const w of side) lines.push(`  ${wallName(w.kind, w.id)}: paneli ${w.panels.map((p) => p.id).join(', ')} — samo boja ${color}`);
+  lines.push('');
+
+  if (app.store.doc.materials.length) {
+    lines.push('OSTALI MATERIJALI (bez određenog mjesta, mapa materijali/)', '-'.repeat(60));
+    for (const id of app.store.doc.materials) {
+      const file = app.store.files.get(id);
+      if (file) lines.push(`  • ${file.name}  (${formatBytes(file.blob.size)})`);
+    }
   }
   return lines.join('\n');
 }
 
 export async function buildZip(app: App): Promise<{ blob: Blob; filename: string }> {
   const { store, layout, canvas } = app;
-  const slug = slugify(store.doc.exhibitor.name);
+  const filename = zipFilename(app);
   const zip = new JSZip();
-  const root = zip.folder(`smotra-${slug}`)!;
+  const root = zip.folder(filename.replace(/\.zip$/, ''))!;
+  const f = app.faculty;
 
-  // Original files, untouched.
+  // Original files, untouched. Placed images and loose materials go to separate folders.
   const files: Record<string, FileRef> = {};
-  const attachments = new Set(store.doc.attachments);
+  const placed = new Set(store.doc.items.flatMap((i) => (i.kind === 'image' ? [i.fileId] : [])));
   for (const id of store.usedFileIds()) {
-    const f = store.files.get(id);
-    if (!f) continue;
-    const path = `${attachments.has(id) ? 'prilozi' : 'datoteke'}/${id.slice(0, 6)}-${safeFileName(f.name)}`;
-    root.file(path, f.blob);
-    files[id] = { path, name: f.name, type: f.type };
+    const file = store.files.get(id);
+    if (!file) continue;
+    const path = `${placed.has(id) ? 'datoteke' : 'materijali'}/${id.slice(0, 6)}-${safeFileName(file.name)}`;
+    root.file(path, file.blob);
+    files[id] = { path, name: file.name, type: file.type };
   }
 
   const report = store.doc.items.map((it) => describe(app, it, files));
@@ -127,13 +145,18 @@ export async function buildZip(app: App): Promise<{ blob: Blob; filename: string
         format: FORMAT,
         version: 1,
         exported_at: new Date().toISOString(),
-        exhibitor: store.doc.exhibitor,
+        event: { name: EVENT.name, dates: EVENT.dates, place: EVENT.place },
+        faculty: f ? { id: f.id, name: f.name, day: f.day, hour: f.hour, color: f.color } : null,
+        contact: { name: store.doc.exhibitor.contact, email: store.doc.exhibitor.email, note: store.doc.exhibitor.note },
         units: 'mm',
         booth: {
           wall_height: BOOTH.wallHeight,
-          panels: layout.panels.map((p) => ({ id: p.id, wall: p.wall, width: p.w, height: p.h, background: store.doc.panelBg[p.id] ?? '#ffffff' })),
+          panel_color: f?.color ?? '#ffffff',
+          header_text: f?.name ?? '',
+          panels: BOOTH.walls.flatMap((w) => w.panels.map((p) => ({ id: p.id, wall: w.id, editable: w.editable, width: p.width, height: BOOTH.wallHeight }))),
         },
         elements: report,
+        materials: store.doc.materials.map((id) => files[id]).filter(Boolean),
         files,
         // Used by "Učitaj ZIP" to reopen the layout in the editor.
         doc: store.doc,
@@ -159,7 +182,7 @@ export async function buildZip(app: App): Promise<{ blob: Blob; filename: string
   }
 
   const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-  return { blob, filename: `smotra-${slug}.zip` };
+  return { blob, filename };
 }
 
 export async function readZip(file: File): Promise<{ doc: Doc; files: SavedFile[] }> {
@@ -177,5 +200,5 @@ export async function readZip(file: File): Promise<{ doc: Doc; files: SavedFile[
     const raw = await f.async('blob');
     files.push({ id, name: ref.name, type: ref.type, blob: new Blob([raw], { type: ref.type }) });
   }
-  return { doc: data.doc as Doc, files };
+  return { doc: normalizeDoc(data.doc), files };
 }

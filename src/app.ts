@@ -1,14 +1,16 @@
-import { type PanelLayout, computeLayout, nearestPanel, panelAt, primaryPanel } from './booth';
+import { BOOTH, type PanelLayout, computeLayout, nearestPanel, panelAt, primaryPanel } from './booth';
 import { BoothCanvas } from './canvas';
-import { type FileEntry, isHeic, isPlaceableImage, loadImageEntry, rawEntry } from './files';
+import { DAYS, EVENT, FACULTIES, drawFascia, facultyById, slotLabel, textOn } from './event';
+import { type FileEntry, isPlaceableImage, loadImageEntry, rawEntry } from './files';
 import { computeIssues } from './issues';
 import { FloorPlan } from './plan';
 import { Preview3D } from './preview3d';
+import { SendDialog } from './send';
 import { Sidebar } from './sidebar';
-import { type Doc, type Exhibitor, type ImageItem, type TextItem, FONTS, Store, emptyDoc } from './state';
+import { type Doc, type Exhibitor, type ImageItem, type TextItem, FONTS, Store, emptyDoc, normalizeDoc } from './state';
 import { type SavedFile, clearProject, loadProject, saveProject } from './storage';
-import { clamp, downloadBlob, round1, toast, uid } from './util';
-import { buildZip, readZip } from './zip';
+import { clamp, esc, round1, toast, uid } from './util';
+import { buildZip, readZip, zipFilename } from './zip';
 
 type Vec = { x: number; y: number };
 
@@ -18,6 +20,8 @@ export class App {
   readonly canvas: BoothCanvas;
   private readonly sidebar: Sidebar;
   private readonly preview: Preview3D;
+  private readonly sendDialog: SendDialog;
+  private readonly welcome = document.getElementById('welcome')!;
   private saveTimer = 0;
 
   constructor() {
@@ -26,6 +30,7 @@ export class App {
     this.sidebar = new Sidebar(this);
     new FloorPlan(document.getElementById('plan')!, this);
     this.preview = new Preview3D(this);
+    this.sendDialog = new SendDialog(this);
 
     this.canvas.onViewChange = () => this.updateZoomLabel();
     this.canvas.onTextDblClick = (id) => {
@@ -35,15 +40,27 @@ export class App {
     this.store.on((kind) => {
       if (kind === 'doc' || kind === 'exhibitor') this.scheduleSave();
       if (kind === 'doc') this.updateUndoButtons();
+      if (kind === 'exhibitor') this.renderFaculty();
     });
 
+    document.querySelectorAll<HTMLSelectElement>('select.faculty-select').forEach(fillFacultySelect);
     this.bindToolbar();
     this.bindExhibitor();
+    this.bindWelcome();
     this.bindDrop();
     this.bindKeys();
     this.loadFonts();
     this.updateUndoButtons();
+    this.renderFaculty();
     void this.restore();
+  }
+
+  get faculty() {
+    return facultyById(this.store.doc.exhibitor.facultyId);
+  }
+
+  get modalOpen() {
+    return this.preview.isOpen || this.sendDialog.isOpen || !this.welcome.hidden;
   }
 
   // ---------- adding content ----------
@@ -61,57 +78,61 @@ export class App {
   }
 
   pickImages(panelId?: string) {
-    const input = document.getElementById('file-image') as HTMLInputElement;
+    this.pick('file-image', (files) => void this.addFiles(files, { panelId }));
+  }
+
+  pickMaterials() {
+    this.pick('file-material', (files) => void this.addMaterials(files));
+  }
+
+  private pick(inputId: string, done: (files: File[]) => void) {
+    const input = document.getElementById(inputId) as HTMLInputElement;
     input.onchange = () => {
       const files = [...(input.files ?? [])];
       input.value = '';
-      if (files.length) void this.addFiles(files, { panelId });
+      if (files.length) done(files);
     };
     input.click();
   }
 
-  pickAttachments() {
-    const input = document.getElementById('file-attach') as HTMLInputElement;
-    input.onchange = () => {
-      const files = [...(input.files ?? [])];
-      input.value = '';
-      for (const f of files) this.addAttachment(f);
-      if (files.length) toast(files.length === 1 ? 'Prilog je dodan.' : `Dodano priloga: ${files.length}.`, 'ok');
-    };
-    input.click();
+  /** Material the exhibitor wants on the stand without choosing where. */
+  async addMaterials(files: File[], quiet = false) {
+    const entries: FileEntry[] = [];
+    for (const file of files) {
+      // Images get a thumbnail; anything else (PDF, AI, video, HEIC…) is kept as-is.
+      const entry = isPlaceableImage(file.name, file.type)
+        ? await loadImageEntry(file, file.name).catch(() => rawEntry(file, file.name))
+        : rawEntry(file, file.name);
+      this.store.files.set(entry.id, entry);
+      entries.push(entry);
+    }
+    if (!entries.length) return;
+    this.store.update((d) => {
+      d.materials.push(...entries.map((e) => e.id));
+    });
+    if (!quiet) toast(entries.length === 1 ? `„${entries[0].name}” je dodan u ostale materijale.` : `Dodano u ostale materijale: ${entries.length}.`, 'ok');
   }
 
-  addAttachment(file: File) {
-    const entry = rawEntry(file, file.name);
-    this.store.files.set(entry.id, entry);
+  removeMaterial(id: string) {
     this.store.update((d) => {
-      d.attachments.push(entry.id);
+      d.materials = d.materials.filter((m) => m !== id);
     });
   }
 
-  removeAttachment(id: string) {
-    this.store.update((d) => {
-      d.attachments = d.attachments.filter((a) => a !== id);
-    });
-  }
-
+  /** Places images on the back wall. Files that can't be shown there go to "Ostali materijali". */
   async addFiles(list: File[], opts: { panelId?: string; at?: Vec } = {}) {
     const added: string[] = [];
+    const other: File[] = [];
     for (const file of list) {
-      if (isHeic(file.name, file.type)) {
-        toast(`„${file.name}” je HEIC fotografija koju preglednik ne može prikazati. Spremite je kao JPG pa pokušajte ponovno.`, 'error');
-        continue;
-      }
       if (!isPlaceableImage(file.name, file.type)) {
-        this.addAttachment(file);
-        toast(`„${file.name}” je dodan kao prilog (ne može se prikazati na platnu).`);
+        other.push(file);
         continue;
       }
       let entry: FileEntry;
       try {
         entry = await loadImageEntry(file, file.name);
       } catch {
-        toast(`Datoteku „${file.name}” nije moguće otvoriti kao sliku. Pokušajte s JPG ili PNG.`, 'error');
+        other.push(file);
         continue;
       }
       this.store.files.set(entry.id, entry);
@@ -151,6 +172,11 @@ export class App {
       added.push(item.id);
     }
     if (added.length) this.store.select({ type: 'item', id: added[added.length - 1] });
+    if (other.length) {
+      await this.addMaterials(other, true);
+      const names = other.map((f) => `„${f.name}”`).join(', ');
+      toast(`${names} ne može se prikazati na zidu, pa je dodano u ostale materijale.`);
+    }
   }
 
   addText(panelId?: string) {
@@ -163,7 +189,7 @@ export class App {
       fontSize: round1(clamp(p.w * 0.1, 30, 110)),
       bold: true,
       italic: false,
-      fill: '#0f172a',
+      fill: textOn(this.canvas.panelColor()),
       align: 'center',
       width: round1(Math.max(p.w * 0.84, 30)),
       lineHeight: 1.15,
@@ -192,7 +218,7 @@ export class App {
     if (!it) return;
     const copy = { ...structuredClone(it), id: uid(), x: it.x + 40, y: it.y + 40 };
     this.store.update((d) => {
-      d.items.splice(d.items.indexOf(d.items.find((i) => i.id === id)!) + 1, 0, copy);
+      d.items.splice(d.items.findIndex((i) => i.id === id) + 1, 0, copy);
     });
     this.store.select({ type: 'item', id: copy.id });
   }
@@ -249,13 +275,6 @@ export class App {
     });
   }
 
-  setPanelBg(panelId: string, color: string | null, historyKey?: string) {
-    this.store.update((d) => {
-      if (color && color !== '#ffffff') d.panelBg[panelId] = color;
-      else delete d.panelBg[panelId];
-    }, historyKey);
-  }
-
   selectPanel(id: string) {
     this.store.select({ type: 'panel', id });
     this.canvas.focusPanel(id);
@@ -263,39 +282,33 @@ export class App {
 
   // ---------- project ----------
 
-  async exportZip() {
-    const name = this.store.doc.exhibitor.name.trim();
-    if (!name) {
-      toast('Prije preuzimanja upišite naziv ustanove (lijevo gore).', 'error');
-      document.getElementById('ex-name')?.focus();
-      return;
+  /** Checks before sending. Returns false (and tells the user why) when something is missing. */
+  readyToSend(): boolean {
+    if (!this.faculty) {
+      toast('Najprije odaberite svoju sastavnicu (lijevo gore).', 'error');
+      document.getElementById('ex-faculty')?.focus();
+      return false;
     }
-    if (!this.store.doc.items.length) {
-      toast('Raspored je prazan. Dodajte barem jednu sliku ili tekst.', 'error');
-      return;
+    if (!this.store.doc.items.length && !this.store.doc.materials.length) {
+      toast('Još nema ništa za poslati. Dodajte slike ili tekst na zid, ili učitajte ostale materijale.', 'error');
+      return false;
     }
     const errors = computeIssues(this).filter((i) => i.level === 'error').length;
-    if (errors && !confirm(`Broj ozbiljnih upozorenja: ${errors} (npr. preniska rezolucija ili element izvan panela).\n\nSvejedno preuzeti ZIP?`)) return;
+    if (errors && !confirm(`Broj ozbiljnih upozorenja: ${errors} (npr. preniska rezolucija ili element izvan panela).\n\nSvejedno nastaviti?`)) return false;
+    return true;
+  }
 
-    const btn = document.getElementById('btn-export') as HTMLButtonElement;
-    btn.disabled = true;
-    btn.dataset.label = btn.textContent ?? '';
-    btn.textContent = 'Pripremam…';
-    try {
-      const { blob, filename } = await buildZip(this);
-      downloadBlob(blob, filename);
-      toast(`Preuzeto: ${filename}. Pošaljite tu datoteku organizatoru.`, 'ok');
-    } catch (e) {
-      console.error(e);
-      toast('Izrada ZIP-a nije uspjela. Pokušajte ponovno.', 'error');
-    } finally {
-      btn.disabled = false;
-      btn.textContent = btn.dataset.label ?? 'Preuzmi ZIP';
-    }
+  makeZip() {
+    this.store.select(null);
+    return buildZip(this);
+  }
+
+  zipFilename() {
+    return zipFilename(this);
   }
 
   async importZip(file: File) {
-    if ((this.store.doc.items.length || this.store.doc.exhibitor.name) && !confirm('Učitavanje će zamijeniti trenutni raspored. Nastaviti?')) return;
+    if ((this.store.doc.items.length || this.store.doc.materials.length) && !confirm('Učitavanje će zamijeniti trenutni raspored. Nastaviti?')) return;
     try {
       const { doc, files } = await readZip(file);
       await this.loadProjectData(doc, files);
@@ -307,28 +320,31 @@ export class App {
   }
 
   reset() {
-    if (!confirm('Obrisati cijeli raspored i početi ispočetka?\n\nOvo se ne može poništiti. Ako želite sačuvati rad, prvo preuzmite ZIP.')) return;
+    if (!confirm('Obrisati cijeli raspored i početi ispočetka?\n\nOvo se ne može poništiti. Ako želite sačuvati rad, prvo ga pošaljite ili preuzmite.')) return;
     this.store.replace(emptyDoc(), new Map());
     this.fillExhibitor();
     void clearProject().catch(() => {});
     this.canvas.fit();
+    this.openWelcome();
   }
 
-  private async loadProjectData(doc: Doc, saved: SavedFile[]) {
+  private async loadProjectData(raw: Doc, saved: SavedFile[]) {
+    const doc = normalizeDoc(raw);
     const imageIds = new Set(doc.items.flatMap((i) => (i.kind === 'image' ? [i.fileId] : [])));
     const files = new Map<string, FileEntry>();
     for (const f of saved) {
       const blob = f.type && !f.blob.type ? new Blob([f.blob], { type: f.type }) : f.blob;
-      if (imageIds.has(f.id)) {
+      if (imageIds.has(f.id) || isPlaceableImage(f.name, f.type)) {
         const entry = await loadImageEntry(blob, f.name, f.id).catch(() => null);
         if (entry) files.set(f.id, entry);
+        else if (!imageIds.has(f.id)) files.set(f.id, rawEntry(blob, f.name, f.id));
       } else {
         files.set(f.id, rawEntry(blob, f.name, f.id));
       }
     }
     doc.items = doc.items.filter((i) => i.kind !== 'image' || files.has(i.fileId));
-    doc.attachments = doc.attachments.filter((id) => files.has(id));
-    doc.exhibitor = { ...emptyDoc().exhibitor, ...doc.exhibitor };
+    doc.materials = doc.materials.filter((id) => files.has(id));
+    if (!facultyById(doc.exhibitor.facultyId)) doc.exhibitor.facultyId = '';
     this.store.replace(doc, files);
     this.fillExhibitor();
     this.canvas.fit(false);
@@ -337,12 +353,15 @@ export class App {
   private async restore() {
     try {
       const saved = await loadProject();
-      if (!saved || (!saved.doc.items.length && !saved.doc.exhibitor.name)) return;
-      await this.loadProjectData(saved.doc, saved.files);
-      toast('Nastavljate s rasporedom spremljenim u ovom pregledniku.');
+      const doc = saved && normalizeDoc(saved.doc);
+      if (saved && doc && (doc.items.length || doc.materials.length || doc.exhibitor.facultyId)) {
+        await this.loadProjectData(doc, saved.files);
+        if (doc.items.length || doc.materials.length) toast('Nastavljate s rasporedom spremljenim u ovom pregledniku.');
+      }
     } catch (e) {
       console.warn('Restore failed', e);
     }
+    if (!this.faculty) this.openWelcome();
   }
 
   private scheduleSave() {
@@ -352,9 +371,8 @@ export class App {
 
   private async save() {
     const status = document.getElementById('save-status')!;
-    const used = this.store.usedFileIds();
     const files: SavedFile[] = [];
-    for (const id of used) {
+    for (const id of this.store.usedFileIds()) {
       const f = this.store.files.get(id);
       if (f) files.push({ id: f.id, name: f.name, type: f.type, blob: f.blob });
     }
@@ -366,6 +384,45 @@ export class App {
       status.textContent = 'Automatsko spremanje nije dostupno';
       status.classList.add('err');
     }
+  }
+
+  // ---------- faculty ----------
+
+  setFaculty(id: string) {
+    if (!facultyById(id) || id === this.store.doc.exhibitor.facultyId) return;
+    this.store.setExhibitor('facultyId', id);
+    this.fillExhibitor();
+  }
+
+  private renderFaculty() {
+    const f = this.faculty;
+    const info = document.getElementById('faculty-info')!;
+    info.innerHTML = f
+      ? `<div class="slot"><span class="dot" style="--c:${f.color}"></span><span><b>Vaš termin:</b> ${esc(slotLabel(f))}</span></div>`
+      : '<p class="hint">Odabirom sastavnice postavljaju se boja svih panela i natpis iznad štanda.</p>';
+    const c = document.getElementById('fascia-preview') as HTMLCanvasElement;
+    const total = BOOTH.organizer.fascia.reduce((n, x) => n + x.width, 0);
+    drawFascia(c, f, BOOTH.organizer.fascia[0].width / total);
+    document.getElementById('brand-faculty')!.textContent = f ? f.name : EVENT.dates;
+  }
+
+  private openWelcome() {
+    const sel = document.getElementById('welcome-faculty') as HTMLSelectElement;
+    sel.value = this.store.doc.exhibitor.facultyId;
+    (document.getElementById('welcome-start') as HTMLButtonElement).disabled = !sel.value;
+    this.welcome.hidden = false;
+    sel.focus();
+  }
+
+  private bindWelcome() {
+    const sel = document.getElementById('welcome-faculty') as HTMLSelectElement;
+    const start = document.getElementById('welcome-start') as HTMLButtonElement;
+    sel.addEventListener('change', () => (start.disabled = !sel.value));
+    start.addEventListener('click', () => {
+      if (!sel.value) return;
+      this.setFaculty(sel.value);
+      this.welcome.hidden = true;
+    });
   }
 
   // ---------- wiring ----------
@@ -385,16 +442,8 @@ export class App {
     on('btn-zoom-fit', () => this.canvas.fit());
     on('btn-3d', () => this.preview.open());
     on('btn-new', () => this.reset());
-    on('btn-export', () => void this.exportZip());
-    on('btn-load', () => {
-      const input = document.getElementById('file-zip') as HTMLInputElement;
-      input.onchange = () => {
-        const f = input.files?.[0];
-        input.value = '';
-        if (f) void this.importZip(f);
-      };
-      input.click();
-    });
+    on('btn-send', () => this.sendDialog.open());
+    on('btn-load', () => this.pick('file-zip', ([f]) => void this.importZip(f)));
   }
 
   private updateZoomLabel() {
@@ -407,13 +456,17 @@ export class App {
   }
 
   private bindExhibitor() {
-    document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-ex]').forEach((el) => {
-      el.addEventListener('input', () => this.store.setExhibitor(el.dataset.ex as keyof Exhibitor, el.value));
+    document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-ex]').forEach((el) => {
+      const field = el.dataset.ex as keyof Exhibitor;
+      el.addEventListener(el instanceof HTMLSelectElement ? 'change' : 'input', () => {
+        if (field === 'facultyId') this.setFaculty(el.value);
+        else this.store.setExhibitor(field, el.value);
+      });
     });
   }
 
   private fillExhibitor() {
-    document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-ex]').forEach((el) => {
+    document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-ex]').forEach((el) => {
       el.value = this.store.doc.exhibitor[el.dataset.ex as keyof Exhibitor] ?? '';
     });
   }
@@ -451,6 +504,7 @@ export class App {
 
     window.addEventListener('paste', (e) => {
       if ((e.target as HTMLElement).closest?.('input, textarea, select')) return;
+      if (this.modalOpen) return;
       const files = [...(e.clipboardData?.files ?? [])];
       if (!files.length) return;
       e.preventDefault();
@@ -461,7 +515,7 @@ export class App {
   private bindKeys() {
     window.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement).closest?.('input, textarea, select, [contenteditable]')) return;
-      if (this.preview.isOpen) return;
+      if (this.modalOpen) return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
       if (mod && key === 'z') {
@@ -500,7 +554,22 @@ export class App {
   private loadFonts() {
     const sample = 'AaČčĆćĐđŠšŽž';
     const loads = FONTS.flatMap((f) => [`400 40px "${f}"`, `700 40px "${f}"`].map((spec) => document.fonts.load(spec, sample).catch(() => [])));
-    void Promise.all(loads).then(() => this.canvas.refreshText());
-    document.fonts.addEventListener('loadingdone', () => this.canvas.refreshText());
+    const refresh = () => {
+      this.canvas.refreshText();
+      this.renderFaculty();
+    };
+    void Promise.all(loads).then(refresh);
+    document.fonts.addEventListener('loadingdone', refresh);
   }
+}
+
+/** Fills a <select> with the faculties, grouped by day. */
+function fillFacultySelect(sel: HTMLSelectElement) {
+  const groups = DAYS.map((d) => {
+    const opts = FACULTIES.filter((f) => f.day === d.id)
+      .map((f) => `<option value="${f.id}">${esc(f.name)} · ${f.hour} h</option>`)
+      .join('');
+    return `<optgroup label="${esc(d.label)}">${opts}</optgroup>`;
+  });
+  sel.innerHTML = `<option value="" disabled selected hidden>Odaberite sastavnicu…</option>${groups.join('')}`;
 }
